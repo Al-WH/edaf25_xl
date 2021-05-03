@@ -2,6 +2,7 @@ package model;
 
 import expr.*;
 import util.XLBufferedReader;
+import util.XLPrintStream;
 
 import java.io.*;
 import java.util.*;
@@ -71,6 +72,8 @@ public class XLModel implements ObservableModel, Environment {
   public ExprResult value(String address) {
     // Read the *raw* text from the XL sheet.
     String valueInSheet = sheet.get(address);
+    // If the value is another cells address, we must make it uppercase to find it.
+    valueInSheet = valueInSheet.toUpperCase();
 
     // Check for possible errors in addressing.
     if (valueInSheet.equals("")) {
@@ -110,32 +113,14 @@ public class XLModel implements ObservableModel, Environment {
   /* Opens the content of a file and puts it in the sheet. */
   public void loadFile(File file) throws IOException {
     XLBufferedReader reader = new XLBufferedReader(file);
-    String line;
-    while ((line = reader.readLine()) != null) {
-      String split[] = line.split("=");
-      String address = split[0];
-      String value = split[1];
-      sheet.put(address, value);
-    }
+    reader.load(sheet);
     updateAll();
   }
 
   /* Saves the sheet do a file on disk. */
-  public void saveFile(File file) {
-    try{
-      PrintWriter writer = new PrintWriter(new FileOutputStream(file));
-      for (Map.Entry<String,String>  cell: sheet.entrySet()) {
-        String address = cell.getKey();
-        String value = cell.getValue();
-        if (value != null && !value.equals("")) {
-          String row = String.format("%s=%s\n", address, value);
-          writer.write(row);
-        }
-      }
-      writer.close();
-    } catch(IOException exception){
-      exception.getStackTrace();
-    }
+  public void saveFile(File file) throws FileNotFoundException {
+    XLPrintStream printStream = new XLPrintStream(file.getName());
+    printStream.save(sheet.entrySet());
   }
 
   @Override
