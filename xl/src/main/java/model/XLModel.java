@@ -4,13 +4,12 @@ import expr.*;
 import gui.CellSelectionObserver;
 import javafx.beans.InvalidationListener;
 import javafx.beans.Observable;
+import javafx.stage.FileChooser;
 import util.XLBufferedReader;
 import util.XLException;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.StringReader;
+import java.io.*;
+import java.nio.file.Path;
 import java.util.*;
 
 public class XLModel implements ObservableModel, Environment {
@@ -21,6 +20,7 @@ public class XLModel implements ObservableModel, Environment {
   private Map<String, String> sheet;
   private List<ModelObserver> observers;
   private Set<String> visited;
+
 
   public XLModel() {
     parser = new ExprParser();
@@ -112,6 +112,19 @@ public class XLModel implements ObservableModel, Environment {
   }
 
   public void saveFile(File file) {
+    FileWriter writer ;
+    try{
+       writer =new FileWriter(file);
+      for (Map.Entry<String,String>  cell: sheet.entrySet()) {
+        writer.write(cell.getKey()+cell.getValue());
+        writer.write("/n");
+      }
+
+     } catch( IOException exception){
+      exception.getStackTrace();
+
+    }
+
   }
 
   @Override
