@@ -1,33 +1,37 @@
 package model;
 
 import expr.*;
-import gui.CellSelectionObserver;
-import javafx.beans.InvalidationListener;
-import javafx.beans.Observable;
-import javafx.stage.FileChooser;
 import util.XLBufferedReader;
-import util.XLException;
 
-import java.io.*;
-import java.nio.file.Path;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.*;
 
+/**
+ * This class represents the XL sheet.
+ */
 public class XLModel implements ObservableModel, Environment {
 
   public static final int COLUMNS = 10, ROWS = 10;
 
   private ExprParser parser;
-  private Map<String, String> sheet;
-  private List<ModelObserver> observers;
-  private Set<String> visited;
 
+  // Maps from: CellAddress -> CellRawString
+  private Map<String, String> sheet;
+
+  // Contains all all observers to notify when needed.
+  private List<ModelObserver> observers;
+
+  // Used to identify circular dependencies.
+  private Set<String> visited;
 
   public XLModel() {
     parser = new ExprParser();
     observers = new ArrayList<>();
     visited = new HashSet<>();
 
-    // Create sheet.
+    // Create & fill a new sheet.
     sheet = new HashMap<>();
     for (int r = 0; r < ROWS; r++) {
       for (int c = 0; c < COLUMNS; c++) {
@@ -43,21 +47,26 @@ public class XLModel implements ObservableModel, Environment {
    * @param text    the new code for the cell - can be raw text (starting with #) or an expression
    */
   public void update(CellAddress address, String text) {
-    // Store the text in the map.
+    // Store the RAW text in the map.
     sheet.put(address.toString(), text);
+
     // Update all cells.
     updateAll();
   }
 
-
-
   /*
-     Updates ALL cells.
+     Updates all cells.
      Note that this method does NOT modify any values, but simply calculates the expression results and
      notifies the observers.
    */
   public void updateAll() {
-    sheet.entrySet().forEach(entry -> update(entry.getKey(), entry.getValue()));
+    sheet.entrySet().forEach(entry -> {                         // Map is format:   Address : Raw string value
+      String address = entry.getKey();
+      String rawString = entry.getValue();
+
+      String calculatedValue = calculateValue(rawString);       // Calculate the value for the frontend.
+      notifyObservers(address, calculatedValue);                // Notify listening observers with the calculated value.
+    });
   }
 
   @Override
@@ -66,14 +75,11 @@ public class XLModel implements ObservableModel, Environment {
     String valueInSheet = sheet.get(address);
 
     // Check for possible errors in addressing.
-    if (valueInSheet == null) {
-      System.out.printf("%s: %s, %s\n", address, valueInSheet, sheet);
+    if (valueInSheet.equals("")) {
       return new ErrorResult("Referencing an empty cell!");
     } else if (isComment(valueInSheet)) {
       return new ErrorResult("Referencing a comment");
-    }
-
-    if (isCell(valueInSheet)) {
+    } else if (isCell(valueInSheet)) {
       // If the value is an address, we need to cache it to ensure we're not circulating!
       // String is format of: CELL_FROM->CELL_TO (without the arrow)
       String cacheString = address + valueInSheet;
@@ -87,89 +93,86 @@ public class XLModel implements ObservableModel, Environment {
       visited.add(cacheString);
     }
 
+    // Call the parser again to find the value from the address.
+    // Note: This will cause recursion if cells are referencing other cells
+    // eg: A1 -> B1 will cause the value of B1 to be calculated first, then A1.
     try {
       return parser.build(valueInSheet).value(this);
     } catch (IOException e) {
+      // Parser
       return new ErrorResult(e.getMessage());
     }
   }
-
 
   /* Returns the raw string of the cell. */
   public String readCellRaw(CellAddress address) {
     return sheet.get(address.toString());
   }
 
+  /* Opens the content of a file and puts it in the sheet. */
   public void loadFile(File file) throws IOException {
     XLBufferedReader reader = new XLBufferedReader(file);
     String line;
     while ((line = reader.readLine()) != null) {
       String split[] = line.split("=");
-      String cell = split[0];
+      String address = split[0];
       String value = split[1];
-      //sheet.put(new CellAddress(), value);
+      sheet.put(address, value);
     }
+    updateAll();
   }
 
+  /* Saves the sheet do a file on disk. */
   public void saveFile(File file) {
-    FileWriter writer ;
     try{
-       writer =new FileWriter(file);
+      FileWriter writer = new FileWriter(file);
       for (Map.Entry<String,String>  cell: sheet.entrySet()) {
-        writer.write(cell.getKey()+cell.getValue());
-        writer.write("/n");
+        writer.write(cell.getKey() + cell.getValue() + "\n");
       }
-
-     } catch( IOException exception){
+    } catch( IOException exception){
       exception.getStackTrace();
-
     }
-
   }
 
   @Override
-  public void addListenever(ModelObserver observer) {
+  public void addObserver(ModelObserver observer) {
     observers.add(observer);
   }
 
   @Override
-  public void deleteAllListeners() {
+  public void clearObservers() {
     observers.clear();
   }
 
+  @Override
+  public void notifyObservers(String address, String newText) {
+    CellAddress cellAddress = stringToCellAddress(address);
+    observers.forEach(obs -> obs.modelHasChanged(cellAddress, newText));
+  }
 
   /* --- Private --- */
 
-  /* Calculates the value of a string expressions. */
-  private String calculateValue(String text) {
-    String resultText = "";
-
-    if (text != null && !text.equals("")) {
-      resultText = parseExpr(text);
-    }
-
-    return resultText;
+  /* Returns an error message. */
+  private String errorMessage(String error) {
+    return "# ERROR: " + error;
   }
 
-  /* Updates a given cell. */
-  private void update(String address, String text) {
+  /* Turns an address string into a CellAddress object. */
+  private CellAddress stringToCellAddress(String address) {
     int col = address.substring(0, 1).toCharArray()[0] - 'A';
     int row = Integer.parseInt(address.substring(1)) - 1;
-
-    CellAddress cellAddress = new CellAddress(col, row);
-    String value = calculateValue(text);
-    notifyObservers(cellAddress, value);
+    return new CellAddress(col, row);
   }
 
-  /* Notifies all observers. */
-  private void notifyObservers(CellAddress address, String value) {
-    observers.forEach(obs -> obs.modelChange(address, value));
-  }
-
-  /* Helper method to parse an expression.
-     Returns the finished (polished) result as a string.
+  /* Calculates the value of a string expressions.
+     Returns the finished (calculated) result as a string.
    */
-  private String parseExpr(String expr) {
+  private String calculateValue(String expr) {
+    // Returns early if input is invalid or empty.
+    if (expr == null || expr.equals("")) {
+      return "";
+    }
+
     // Clear visited address combinations.
     visited.clear();
     String resultText = "";
@@ -186,12 +189,16 @@ public class XLModel implements ObservableModel, Environment {
 
         // Do some cleanup of the text format.
         if (result.isError()) {
-          resultText = "# ERROR: " + result.error();
+          resultText = errorMessage(result.error());
         } else {
+          // No errors, then this is the final string value.
+          // result.value()
+
           resultText = String.valueOf(result.value());
+
         }
       } catch (IOException e) {
-        resultText = "# ERROR: " + e.getMessage();
+        resultText = errorMessage(e.getMessage());
       }
     }
     return resultText;
